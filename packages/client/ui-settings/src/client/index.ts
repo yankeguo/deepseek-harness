@@ -54,8 +54,10 @@ export const inject = ['remote', 'remote.settings']
 export function apply(ctx: Context): void {
   const schema = new SettingsSchemaService(ctx)
   // Resolved once here, where `remote` is declared in this plugin's own
-  // `inject`; the binder hands the same answer to every scope it binds.
-  const persistence = ctx.remote.$host.isLoopback ? 'host' : 'memory'
+  // `inject`; the binder hands the same answer to every scope it binds. A page
+  // the Host serves — loopback or a declared trusted authority — persists
+  // preferences in the Host document; any other page keeps them process-local.
+  const persistence = ctx.remote.$host.trustedAuthority ? 'host' : 'memory'
   const mirror = new SettingsDescribeMirror(ctx, persistence)
   ctx.effect(() => {
     const disposers = [

@@ -66,13 +66,13 @@ function canonicalAuthority(entry: string, entryUrl: URL): string {
 }
 
 /**
- * Whether the request authority matches a `trustedHosts` entry. An entry with
+ * Whether a parsed authority matches a `trustedHosts` entry. An entry with
  * an explicit port matches that exact authority; a port-less entry matches the
  * hostname on any port (the shape the CLI derives for IP-literal LAN serving,
  * where the bound port may be OS-assigned). Both sides compare through WHATWG
  * normalization, so case and a redundant `:80` never decide trust.
  */
-function isTrustedAuthority(hostUrl: URL, trustedHosts: readonly string[]): boolean {
+function matchesTrustedEntry(hostUrl: URL, trustedHosts: readonly string[]): boolean {
   return trustedHosts.some((entry) => {
     const entryUrl = parseAuthority(entry)
     if (entryUrl === undefined) return false
@@ -80,6 +80,20 @@ function isTrustedAuthority(hostUrl: URL, trustedHosts: readonly string[]): bool
       ? entryUrl.hostname === hostUrl.hostname
       : entryUrl.host === hostUrl.host
   })
+}
+
+/**
+ * Whether one bare authority (`host` or `host:port`) is covered by the
+ * deployment's `trustedHosts`, through the same normalization
+ * {@link isTrustedApiRequest} applies. The Client half uses it to classify the
+ * authority of the page it runs in.
+ * @param authority - authority string, e.g. a page's `location.host`.
+ * @param trustedHosts - declared non-loopback authorities.
+ * @returns true when an entry covers this authority; an unparsable authority never does.
+ */
+export function isTrustedAuthority(authority: string, trustedHosts: readonly string[]): boolean {
+  const hostUrl = parseAuthority(authority)
+  return hostUrl !== undefined && matchesTrustedEntry(hostUrl, trustedHosts)
 }
 
 /**
@@ -100,7 +114,7 @@ export function isTrustedApiRequest(request: ConnectionTrustRequest, trustedHost
   if (host === undefined) return false
   const hostUrl = parseAuthority(host)
   if (hostUrl === undefined) return false
-  if (!isLoopbackHostname(hostUrl.hostname) && !isTrustedAuthority(hostUrl, trustedHosts)) return false
+  if (!isLoopbackHostname(hostUrl.hostname) && !matchesTrustedEntry(hostUrl, trustedHosts)) return false
   // Cross-site fence: modern browsers label the initiator relationship on
   // every fetch; an explicit cross-site marker is refused regardless of Origin.
   if (header(request.headers, 'sec-fetch-site') === 'cross-site') return false

@@ -120,6 +120,12 @@ export interface RemoteHostFacts {
   readonly home: string | undefined
   /** Whether the carrier connects to the local Host. */
   readonly isLoopback: boolean
+  /**
+   * Whether the page's authority is one the Host serves: loopback or a
+   * declared `trustedHosts` authority. Fixed for the page lifetime; a page
+   * outside both cannot reach the API at all.
+   */
+  readonly trustedAuthority: boolean
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -190,10 +196,15 @@ class ClientRemoteService extends Service implements ClientRemote {
   get $host(): RemoteHostFacts {
     // Identity-stable: readers (useSyncExternalStore snapshots, memo inputs)
     // compare by reference, so a fresh object is minted only when the fact
-    // itself changed. isLoopback is fixed for the page lifetime.
+    // itself changed. isLoopback and trustedAuthority are fixed for the page
+    // lifetime.
     const home = this.connection.generation.getSnapshot()?.host.home
     if (this.hostFacts === undefined || this.hostFacts.home !== home) {
-      this.hostFacts = { home, isLoopback: this.connection.isLoopback }
+      this.hostFacts = {
+        home,
+        isLoopback: this.connection.isLoopback,
+        trustedAuthority: this.connection.trustedAuthority,
+      }
     }
     return this.hostFacts
   }

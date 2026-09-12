@@ -11,6 +11,7 @@ import {
 import { createFixtureConnectionRpc } from './fixture.ts'
 import { createWebConnectionRpc, type RpcFetch, type RpcStreamOpen } from './rpc.ts'
 import { isLoopbackHostname } from '../loopback-hostname.ts'
+import { isTrustedAuthority } from '../api-request-trust.ts'
 import type { ClientConnectionRpc } from '../rpc.ts'
 import { resolveConnectionConfig } from '../recovery-config.ts'
 
@@ -109,6 +110,38 @@ export interface ClientTransportHooks {
 interface ClientTransportGlobal {
   __DSH_TRANSPORT__?: ClientTransportHooks
   __DSH_CONNECTION_RECOVERY__?: unknown
+  /** Host-injected authorities this deployment serves beyond loopback. */
+  __DSH_TRUSTED_HOSTS__?: unknown
+}
+
+/**
+ * Declared non-loopback authorities from the Host-injected page global. A
+ * malformed global reads as none: the page cannot widen its own grant by
+ * rewriting it, and the Host fence still decides every request.
+ * @param value - raw `globalThis.__DSH_TRUSTED_HOSTS__`.
+ * @returns the declared authorities, or an empty list when the global is absent or malformed.
+ */
+function readTrustedHosts(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return []
+  const entries: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string') return []
+    entries.push(entry)
+  }
+  return entries
+}
+
+/**
+ * Authority of the served page in `host[:port]` form. A browser location
+ * carries `host`; a runtime exposing only `hostname`/`port` normalizes the same
+ * way.
+ * @param location - page location.
+ * @returns the authority `trustedHosts` entries compare against.
+ */
+function pageAuthority(location: { readonly hostname: string; readonly host?: string; readonly port?: string }): string {
+  if (typeof location.host === 'string' && location.host !== '') return location.host
+  const port = location.port
+  return port === undefined || port === '' ? location.hostname : `${location.hostname}:${port}`
 }
 
 /**
@@ -122,6 +155,14 @@ export interface ConnectionHandle {
    * ({@link ClientTransportHooks.ownsHost}), or the context is not a browser.
    */
   readonly isLoopback: boolean
+  /**
+   * Whether this page's authority is one the Host serves: loopback, or an
+   * authority the deployment declared in `trustedHosts` — the same
+   * classification the /api Host fence applies to every request, so a page
+   * outside both cannot reach the API at all. Distinct from
+   * {@link isLoopback}, which stays the stricter privileged-surface fact.
+   */
+  readonly trustedAuthority: boolean
   /** Current Remote event generation and the Host facts carried by its opening frame. */
   readonly generation: ConnectionGenerationState
   /** Current recovery lifecycle for connection-specific consumers. */
@@ -191,6 +232,7 @@ export function apply(ctx: Context): void {
   const fixtureRpc = fixture ? createFixtureConnectionRpc() : undefined
   const transport = (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__
   const recovery = resolveConnectionConfig((globalThis as ClientTransportGlobal).__DSH_CONNECTION_RECOVERY__)
+  const trustedHosts = readTrustedHosts((globalThis as ClientTransportGlobal).__DSH_TRUSTED_HOSTS__)
   const rpc = fixtureRpc ?? transport?.rpc ?? createWebConnectionRpc(transport?.fetch, transport?.openStream)
   let generationSource: ConnectionGenerationSource | undefined
   let owner: ConnectionOwner | undefined
@@ -229,8 +271,12 @@ export function apply(ctx: Context): void {
     publishGeneration(undefined)
     publishState(undefined)
   }
+  const isLoopback = transport?.ownsHost === true || pageLocation === undefined || isLoopbackHostname(pageLocation.hostname)
   const handle: ConnectionHandle = {
-    isLoopback: transport?.ownsHost === true || pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    isLoopback,
+    // A runtime without a page location is already loopback, so the short
+    // circuit guards the authority read.
+    trustedAuthority: isLoopback || isTrustedAuthority(pageAuthority(pageLocation), trustedHosts),
     generation: {
       getSnapshot: () => generation,
       subscribe: (listener) => {

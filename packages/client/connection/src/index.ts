@@ -81,6 +81,14 @@ export interface ConnectionConfig {
    * bind. An entry that is not a bare, canonical authority fails plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Require the browser-session cookie on the Host API and index responses.
+   * Default: true. Set false only when a deployment-owned proxy authenticates
+   * every caller: with authentication off, any client that passes the
+   * Host/Origin fence gains the complete tool-capable Host API. The launch
+   * token exchange and cookie signing secret are then unused.
+   */
+  authentication?: boolean
   /** Absolute browser-session lifetime in days. Default: 30. */
   cookieMaxAgeDays?: number
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
@@ -90,6 +98,7 @@ export interface ConnectionConfig {
 export const Config: z<ConnectionConfig> = z.object({
   recovery: ConnectionRecoveryConfigSchema.default({}),
   trustedHosts: z.array(String).default([]),
+  authentication: z.boolean().default(true),
   cookieMaxAgeDays: z.natural().min(1).default(30),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
@@ -97,7 +106,8 @@ export const Config: z<ConnectionConfig> = z.object({
 /**
  * Provides carrier-neutral RPC and Fetch registries. When `webServer` is
  * present, the plugin also mounts the `/api` browser transport with Host/Origin
- * checks and persistent browser authentication.
+ * checks and, unless `authentication` is false, persistent browser
+ * authentication.
  * @param ctx - Host plugin context.
  * @param config - resolved plugin config (schema defaults applied).
  */
@@ -105,6 +115,7 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
   const recovery = resolveConnectionConfig(config?.recovery)
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
+  const authentication = config?.authentication ?? true
   const cookieMaxAgeDays = config?.cookieMaxAgeDays ?? 30
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
@@ -114,12 +125,19 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
   const connection = new HostConnectionService(
     ctx,
     trustedHosts,
-    await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays),
+    authentication
+      ? await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays)
+      : undefined,
   )
   ctx.inject(['webServer'], (webCtx) => {
     assertImageBodyCapacity(webCtx, maxRequestBodyBytes)
     webCtx.on('webserver/index-inject', (table) => {
       table.push({ kind: 'global', name: '__DSH_CONNECTION_RECOVERY__', value: recovery })
+      // The page classifies its own authority against the same list the fence
+      // uses; absent (the loopback-only default) means no declared authority.
+      if (trustedHosts.length > 0) {
+        table.push({ kind: 'global', name: '__DSH_TRUSTED_HOSTS__', value: [...trustedHosts] })
+      }
     })
     const fetchHandler = connection.createSharedFetchHandler(API_PATH)
     const route: WebRoute = {
